@@ -1,47 +1,62 @@
+TOPNAME = top
+NXDC_FILES = constr/top.nxdc
+INC_PATH ?=
 # 自动探测当前目录下的 Verilog 源文件，并生成对应的 CPP 文件
+VSRCS = $(shell find $(abspath ./vsrc) -name "*.v")
+CSRCS = $(shell find $(abspath ./csrc) -name "*.c" -or -name "*.cc" -or -name "*.cpp")
+CSRCS += $(SRC_AUTO_BIND)
 VERILATOR = verilator
-VERILATOR_FLAGS = --trace-fst --cc --exe
-VERILOG_SRC := $(wildcard *.v)
-CPP_SRC := $(patsubst %.v,%.cpp,$(VERILOG_SRC))
-MODULE_NAME := $(basename $(VERILOG_SRC))
+# 生成可执行的C++
+VERILATOR_CFLAGS = --cc --build \
+	-O3 --x-assign fast --x-initial fast --noassert
+# 生成FST波形文件
+#VERILATOR_FLAGS += --trace-fst
+# 以调试模式启动
+#VERILATOR_FLAGS += --debug
 
-# 错误检测
-ifeq ($(words $(VERILOG_SRC)),0)
-$(error No Verilog source(.v) found in current directory!)
-endif
+# 生成的可执行文件
+BUILD_DIR = ./build
+OBJ_DIR = $(BUILD_DIR)/obj_dir
+BIN = $(BUILD_DIR)/$(TOPNAME)
 
-ifneq ($(words $(VERILOG_SRC)),1)
-$(error Multiple Verilog sources detected: $(VERILOG_SRC))
-endif
+default: $(BIN)
 
-ifeq ($(wildcard $(CPP_SRC)),)
-$(error Corresponding CPP file $(CPP_SRC) not found!)
-endif
+$(shell mkdir -p $(BUILD_DIR))
 
-# 动态变量设置
-TARGET := V$(MODULE_NAME)
-SIM_WAVE = simx.fst
+# 端口约束文件
+SRC_AUTO_BIND = $(abspath $(BUILD_DIR)/auto_bind.cpp)
+$(SRC_AUTO_BIND): $(NXDC_FILES)
+	python3 $(NVBOARD_HOME)/scripts/auto_pin_bind.py $^ $@
 
-# 伪目标声明
-.PHONY: sim clean
+CPPSRCS += $(SRC_AUTO_BIND)
 
-all:
-	@echo "Write this Makefile by your self."
 
-sim:
+include $(NVBOARD_HOME)/scripts/nvboard.mk
+
+INCFLAGS = $(addprefix -I, $(INC_PATH))
+CXXFLAGS += $(INCFLAGS) -DTOP_NAME="\"V$(TOPNAME)\""
+LDFLAGS += -lSDL2 -lSDL2_image
+
+$(BIN): $(VSRCS) $(CSRCS) $(NVBOARD_ARCHIVE)
+	@rm -rf $(OBJ_DIR)
+	$(VERILATOR) $(VERILATOR_CFLAGS) \
+		--top-module $(TOPNAME) $^ \
+		$(addprefix -CFLAGS , $(CXXFLAGS)) $(addprefix -LDFLAGS , $(LDFLAGS)) \
+		--Mdir $(OBJ_DIR) --exe -o $(abspath $(BIN))
+
+all:default
+	@echo "[commit] git_commit : sim RTL"
 	$(call git_commit, "sim RTL") # DO NOT REMOVE THIS LINE!!!
-	@echo "[SIM] Building $(MODULE_NAME) with..."
-	@echo "  Verilog: $(VERILOG_SRC)"
-	@echo "  CPP: $(CPP_SRC)"
-	$(VERILATOR) $(VERILATOR_FLAGS) $(VERILOG_SRC) $(CPP_SRC) --Mdir obj_dir
-	$(MAKE) -C obj_dir -f $(TARGET).mk
-	@echo "[SIM] Running simulation..."
-	obj_dir/$(TARGET)
-	@echo "[SIM] Waveform generated: $(SIM_WAVE)"
+	@echo "[commit] git_commit : sim RTL Done"
+
+sim:all
+	@$(BIN)
 
 clean:
 	@echo "[CLEAN] Removing build artifacts..."
-	rm -rf obj_dir $(SIM_WAVE)
+	rm -rf $(OBJ_DIR) $(SRC_AUTO_BIND)
 	@echo "[CLEAN] Done"
+
+.PHONY: all clean run default
 
 include ../Makefile
